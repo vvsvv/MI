@@ -1,23 +1,29 @@
 package life.iai.demo;
+
 import java.util.*;
 import java.util.concurrent.atomic.AtomicLong;
 import java.util.stream.Collectors;
 
+import static java.util.Map.entry;
+
 // 数据集基类
 abstract class DataSet {
     protected String source;
+
     public DataSet(String source) {
         this.source = source;
     }
+
     public abstract String getContent();
 }
 
 // 知识表示（添加关联关系）
 class Knowledge {
     private static final AtomicLong idCounter = new AtomicLong(0);
-    private final long id;
+    private long id;
     private final String content;
     private final String source;
+    private String summary;
     private final long timestamp;
     private final Set<Long> relatedKnowledgeIds = new HashSet<>();
 
@@ -29,11 +35,30 @@ class Knowledge {
     }
 
     // Getters
-    public long getId() { return id; }
-    public String getContent() { return content; }
-    public String getSource() { return source; }
-    public long getTimestamp() { return timestamp; }
-    public Set<Long> getRelatedKnowledgeIds() { return new HashSet<>(relatedKnowledgeIds); }
+    public long getId() {
+        return id;
+    }
+
+    public void setId(long id) {
+        // 注意：实际应用中需要更安全的ID管理
+        this.id = id;
+    }
+
+    public String getContent() {
+        return content;
+    }
+
+    public String getSource() {
+        return source;
+    }
+
+    public long getTimestamp() {
+        return timestamp;
+    }
+
+    public Set<Long> getRelatedKnowledgeIds() {
+        return new HashSet<>(relatedKnowledgeIds);
+    }
 
     // 添加关联知识
     public void addRelatedKnowledge(long knowledgeId) {
@@ -63,6 +88,10 @@ class Knowledge {
 
         return String.format("Knowledge#%d [%tF %<tT]\n内容: %s\n来源: %s\n关联: %s",
                 id, new Date(timestamp), content, source, relations);
+    }
+
+    public void setSummary(String summary) {
+        this.summary = summary;
     }
 }
 
@@ -94,6 +123,7 @@ class KnowledgeSet {
 // 工具接口
 interface KnowledgeTool {
     String getName();
+
     KnowledgeSet process(DataSet input, KnowledgeSet context);
 }
 
@@ -114,13 +144,21 @@ class ToolChain {
         addTool(tool, toolSequence.size());
     }
 
-    public KnowledgeSet execute(DataSet input, KnowledgeSet context) {
-        KnowledgeSet result = new KnowledgeSet();
+    public KnowledgeSet execute(DataSet input, KnowledgeSet historicalContext) {
+        KnowledgeSet currentResult = new KnowledgeSet(); // 本次处理中逐步积累的知识
         for (KnowledgeTool tool : toolSequence) {
-            KnowledgeSet toolResult = tool.process(input, context);
-            result.merge(toolResult);
+            // 创建当前步骤的上下文：历史上下文 + 本次已生成的知识
+            KnowledgeSet stepContext = new KnowledgeSet();
+            stepContext.merge(historicalContext); // 加入历史上下文
+            stepContext.merge(currentResult);    // 加入本次处理中前面工具生成的知识
+
+            // 执行当前工具
+            KnowledgeSet toolResult = tool.process(input, stepContext);
+
+            // 将当前工具生成的知识合并到当前结果
+            currentResult.merge(toolResult);
         }
-        return result;
+        return currentResult;
     }
 
     public void upgradeTool(String name, KnowledgeTool newTool) {
@@ -138,10 +176,18 @@ class ToolChain {
         }
     }
 
-    public List<String> getToolSequence() {
+    public List<KnowledgeTool> getToolSequence() {
+        return new ArrayList<>(toolSequence);
+    }
+
+    public List<String> getToolSequenceName() {
         return toolSequence.stream()
                 .map(KnowledgeTool::getName)
                 .collect(Collectors.toList());
+    }
+
+    public KnowledgeTool getToolByName(String name) {
+        return toolMap.get(name);
     }
 }
 
@@ -150,26 +196,27 @@ class MemorySystem {
     private final KnowledgeSet longTermMemory = new KnowledgeSet();
     private final Map<String, KnowledgeSet> contextualMemory = new HashMap<>();
     private final Map<String, Set<Long>> keywordIndex = new HashMap<>();
+    // 添加公司索引
+    private final Map<String, Set<Long>> companyIndex = new HashMap<>();
 
     public void store(KnowledgeSet knowledge) {
         knowledge.getAllKnowledge().forEach(k -> {
-            longTermMemory.addKnowledge(k);
+            // 检查知识是否已存在
+            Knowledge existing = longTermMemory.getKnowledge(k.getId());
+            if (existing != null) {
+                // 更新现有知识而不是添加新实例
+                if (existing instanceof InvestmentKnowledge && k instanceof InvestmentKnowledge) {
+                    InvestmentKnowledge existingIK = (InvestmentKnowledge) existing;
+                    InvestmentKnowledge newIK = (InvestmentKnowledge) k;
+                    existingIK.updateConfidence(newIK.getConfidence());
+                }
+            } else {
+                longTermMemory.addKnowledge(k);
+            }
             indexKnowledge(k);
         });
     }
 
-    // 建立关键词索引
-    private void indexKnowledge(Knowledge knowledge) {
-        String content = knowledge.getContent().toLowerCase();
-        String[] words = content.split("\\W+");
-
-        for (String word : words) {
-            if (word.length() > 2) { // 忽略短词
-                keywordIndex.computeIfAbsent(word, k -> new HashSet<>())
-                        .add(knowledge.getId());
-            }
-        }
-    }
 
     public KnowledgeSet recallContext(String context) {
         return contextualMemory.getOrDefault(context, new KnowledgeSet());
@@ -200,7 +247,7 @@ class MemorySystem {
 
     // 自动关联相关主题的知识
     public void autoRelateByTopic(String topic) {
-        List<Knowledge> related = searchMemory(topic);
+        List<Knowledge> related = semanticSearchMemory(topic);
         if (related.size() < 2) return;
 
         for (int i = 0; i < related.size(); i++) {
@@ -217,12 +264,190 @@ class MemorySystem {
         Knowledge k = longTermMemory.getKnowledge(id);
         return (k != null) ? k.toDetailedString(this) : "知识不存在";
     }
+
+    private static final Set<String> STOP_WORDS = new HashSet<>(Arrays.asList(
+            "the", "and", "of", "to", "a", "in", "is", "it", "that", "this",
+            "的", "是", "在", "和", "了", "有", "就", "也", "与", "等", "为", "我", "你", "他", "我们", "他们"
+    ));
+
+    private static final Map<String, String> SYNONYMS = Map.ofEntries(
+            entry("ai", "人工智能"),
+            entry("人工智能", "ai"),
+            entry("腾讯", "tencent"),
+            entry("tencent", "腾讯"),
+            entry("阿里", "阿里巴巴"),
+            entry("阿里巴巴", "阿里"),
+            entry("投资", "invest"),
+            entry("invest", "投资")
+    );
+
+    private void indexKnowledge(Knowledge knowledge) {
+        String content = knowledge.getContent().toLowerCase();
+
+        // 使用改进的分词算法（支持中文）
+        List<String> tokens = improvedTokenizer(content);
+        Map<String, Integer> termFrequency = new HashMap<>();
+
+        // 计算词频并过滤
+        for (String token : tokens) {
+            // 同义词归一化
+            String normalized = SYNONYMS.getOrDefault(token, token);
+
+            if (!STOP_WORDS.contains(normalized) && normalized.length() > 1) {
+                termFrequency.put(normalized, termFrequency.getOrDefault(normalized, 0) + 1);
+            }
+        }
+
+        // 按词频排序（取前5个关键词）
+        List<Map.Entry<String, Integer>> sortedTerms = termFrequency.entrySet().stream()
+                .sorted(Map.Entry.<String, Integer>comparingByValue().reversed())
+                .limit(5)
+                .collect(Collectors.toList());
+
+        // 创建知识摘要（含位置权重）
+        String summary = createSummary(content, sortedTerms);
+        knowledge.setSummary(summary); // 假设Knowledge类添加了setSummary方法
+
+        // 建立索引
+        for (Map.Entry<String, Integer> entry : sortedTerms) {
+            String term = entry.getKey();
+            keywordIndex.computeIfAbsent(term, k -> new HashSet<>())
+                    .add(knowledge.getId());
+        }
+
+        // 添加公司索引
+        if (knowledge instanceof InvestmentKnowledge) {
+            InvestmentKnowledge ik = (InvestmentKnowledge) knowledge;
+            if (ik.getType() == InvestmentKnowledge.KnowledgeType.COMPANY_ANALYSIS) {
+                String company = ik.getCompanyName();
+                if (company != null && !company.isEmpty()) {
+                    companyIndex.computeIfAbsent(company, k -> new HashSet<>())
+                            .add(ik.getId());
+                }
+            }
+        }
+    }
+
+    // 添加公司查询方法
+    public List<Knowledge> searchByCompany(String company) {
+        Set<Long> ids = companyIndex.getOrDefault(company, Collections.emptySet());
+        return ids.stream()
+                .map(this::getKnowledgeById)
+                .filter(Objects::nonNull)
+                .collect(Collectors.toList());
+    }
+
+    // 改进的分词器（支持中英文混合）
+    private List<String> improvedTokenizer(String text) {
+        List<String> tokens = new ArrayList<>();
+        StringBuilder currentWord = new StringBuilder();
+
+        // 增强中文分词逻辑
+        for (int i = 0; i < text.length(); i++) {
+            char c = text.charAt(i);
+
+            // 处理中文字符
+            if (isCJKCharacter(c)) {
+                // 中文连续字符处理
+                currentWord.append(c);
+
+                // 检查下一个字符是否是中文
+                boolean nextIsCJK = (i + 1 < text.length()) && isCJKCharacter(text.charAt(i + 1));
+
+                // 如果不是中文或到达结尾，添加当前词
+                if (!nextIsCJK || i == text.length() - 1) {
+                    tokens.add(currentWord.toString());
+                    currentWord.setLength(0);
+                }
+            }
+            // 处理英文字符
+            else if (Character.isLetterOrDigit(c)) {
+                currentWord.append(c);
+            }
+            // 分隔符处理
+            else if (!currentWord.isEmpty()) {
+                tokens.add(currentWord.toString());
+                currentWord.setLength(0);
+            }
+        }
+
+        if (!currentWord.isEmpty()) {
+            tokens.add(currentWord.toString());
+        }
+
+        return tokens;
+    }
+
+    // 判断中日韩文字字符
+    private boolean isCJKCharacter(char c) {
+        Character.UnicodeBlock block = Character.UnicodeBlock.of(c);
+        return block == Character.UnicodeBlock.CJK_UNIFIED_IDEOGRAPHS
+                || block == Character.UnicodeBlock.CJK_COMPATIBILITY_IDEOGRAPHS
+                || block == Character.UnicodeBlock.CJK_UNIFIED_IDEOGRAPHS_EXTENSION_A;
+    }
+
+    // 创建知识摘要（突出关键词）
+    private String createSummary(String content, List<Map.Entry<String, Integer>> keywords) {
+        String summary = content;
+
+        // 截取前100字符作为基础摘要
+        if (summary.length() > 100) {
+            summary = summary.substring(0, 100) + "...";
+        }
+
+        // 高亮显示关键词
+        for (Map.Entry<String, Integer> kw : keywords) {
+            String term = kw.getKey();
+            summary = summary.replace(term, "[" + term + "]");
+        }
+
+        return summary;
+    }
+
+    public List<Knowledge> semanticSearchMemory(String query) {
+        // 1. 查询解析
+        List<String> queryTerms = improvedTokenizer(query.toLowerCase());
+        Map<String, Integer> termWeights = new HashMap<>();
+
+
+        // 2. 计算查询词权重
+        for (String term : queryTerms) {
+            String normalized = SYNONYMS.getOrDefault(term, term);
+            if (!STOP_WORDS.contains(normalized)) {
+                termWeights.put(normalized, termWeights.getOrDefault(normalized, 0) + 1);
+            }
+        }
+
+        // 3. 知识相关性评分
+        Map<Long, Integer> knowledgeScores = new HashMap<>();
+        for (Map.Entry<String, Integer> entry : termWeights.entrySet()) {
+            String term = entry.getKey();
+            int weight = entry.getValue();
+
+            Set<Long> knowledgeIds = keywordIndex.getOrDefault(term, Collections.emptySet());
+            for (Long id : knowledgeIds) {
+                knowledgeScores.put(id, knowledgeScores.getOrDefault(id, 0) + weight);
+            }
+        }
+
+        // 4. 排序并返回结果
+        return knowledgeScores.entrySet().stream()
+                .sorted(Map.Entry.<Long, Integer>comparingByValue().reversed())
+                .map(entry -> longTermMemory.getKnowledge(entry.getKey()))
+                .filter(Objects::nonNull)
+                .collect(Collectors.toList());
+    }
+
+    // 添加按ID获取知识的方法
+    public Knowledge getKnowledgeById(long id) {
+        return longTermMemory.getKnowledge(id);
+    }
 }
 
 // 思考引擎（使用工具链）
 class ThinkingEngine {
     private final ToolChain toolChain;
-    private final MemorySystem memory;
+    protected final MemorySystem memory;
 
     public ThinkingEngine(ToolChain toolChain, MemorySystem memory) {
         this.toolChain = toolChain;
@@ -241,12 +466,17 @@ class ThinkingEngine {
 
         // 存储到记忆系统
         memory.store(newKnowledge);
-        memory.setContext(input.source, newKnowledge);
+
+        // 创建新的上下文：合并历史上下文和新知识
+        KnowledgeSet mergedContext = new KnowledgeSet();
+        mergedContext.merge(contextKnowledge);
+        mergedContext.merge(newKnowledge);
+        memory.setContext(input.source, mergedContext);
 
         // 自动关联相关主题的知识
-        memory.autoRelateByTopic("Java");
-        memory.autoRelateByTopic("Python");
-        memory.autoRelateByTopic("AI");
+//        memory.autoRelateByTopic("Java");
+//        memory.autoRelateByTopic("Python");
+//        memory.autoRelateByTopic("AI");
 
         return newKnowledge;
     }
@@ -256,14 +486,16 @@ class ThinkingEngine {
     }
 
     public List<String> getToolSequence() {
-        return toolChain.getToolSequence();
+        return toolChain.getToolSequenceName();
     }
 }
 
 // 示例工具实现
 class AnalysisTool implements KnowledgeTool {
     @Override
-    public String getName() { return "DataAnalyzer"; }
+    public String getName() {
+        return "DataAnalyzer";
+    }
 
     @Override
     public KnowledgeSet process(DataSet input, KnowledgeSet context) {
@@ -286,7 +518,9 @@ class AnalysisTool implements KnowledgeTool {
 
 class PatternTool implements KnowledgeTool {
     @Override
-    public String getName() { return "PatternFinder"; }
+    public String getName() {
+        return "PatternFinder";
+    }
 
     @Override
     public KnowledgeSet process(DataSet input, KnowledgeSet context) {
@@ -310,7 +544,9 @@ class PatternTool implements KnowledgeTool {
 
 class RelationTool implements KnowledgeTool {
     @Override
-    public String getName() { return "RelationBuilder"; }
+    public String getName() {
+        return "RelationBuilder";
+    }
 
     @Override
     public KnowledgeSet process(DataSet input, KnowledgeSet context) {
