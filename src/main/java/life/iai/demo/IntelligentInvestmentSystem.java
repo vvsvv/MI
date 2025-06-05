@@ -225,8 +225,7 @@ class FeedbackLearningTool implements KnowledgeTool {
         // 从长期记忆中获取知识对象进行修改
         for (Long id : new ArrayList<>(knowledgePerformance.keySet())) {
             Knowledge k = memorySystem.getKnowledgeById(id);
-            if (k instanceof InvestmentKnowledge) {
-                InvestmentKnowledge ik = (InvestmentKnowledge) k;
+            if (k instanceof InvestmentKnowledge ik) {
                 double performance = knowledgePerformance.get(id);
 
                 // 根据表现调整置信度
@@ -370,11 +369,6 @@ public class IntelligentInvestmentSystem {
         // 输出反馈学习结果
         System.out.println("反馈学习生成的知识:");
         feedbackResult.getAllKnowledge().forEach(System.out::println);
-        // 显示更新后的知识置信度
-        System.out.println("\n更新后的腾讯分析:");
-        memory.getCompanyAnalyses("腾讯").forEach(k ->
-                System.out.println(k.getContent() + " [置信度: " + (int)(k.getConfidence()*100) + "%]")
-        );
 
         // 显示更新后的知识置信度
         System.out.println("\n更新后的腾讯分析:");

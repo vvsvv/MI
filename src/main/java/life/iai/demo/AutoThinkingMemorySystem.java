@@ -205,9 +205,7 @@ class MemorySystem {
             Knowledge existing = longTermMemory.getKnowledge(k.getId());
             if (existing != null) {
                 // 更新现有知识而不是添加新实例
-                if (existing instanceof InvestmentKnowledge && k instanceof InvestmentKnowledge) {
-                    InvestmentKnowledge existingIK = (InvestmentKnowledge) existing;
-                    InvestmentKnowledge newIK = (InvestmentKnowledge) k;
+                if (existing instanceof InvestmentKnowledge existingIK && k instanceof InvestmentKnowledge newIK) {
                     existingIK.updateConfidence(newIK.getConfidence());
                 }
             } else {
